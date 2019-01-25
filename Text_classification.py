@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Nov 19 20:47:27 2017
-
-@author: tanzhenyu
-"""
-
 import os
 import nltk
 from nltk.corpus import stopwords
@@ -38,12 +30,11 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.preprocessing import label_binarize
-
-
+from gensim.models import Doc2Vec
 
 
 """EDA Analysis"""
-input_path='/Users/tanzhenyu/Desktop/data/'
+input_path='/Users/tanzhenyu/Desktop/stat841/data/'
 data = pd.read_csv(os.path.join(input_path,'Text_classfication.csv'),header=None)
 
 data.head()
@@ -66,6 +57,7 @@ data_raw.drop(data_raw.columns[[1,2,3]],axis = 1, inplace = True)
 
 #Rename the col
 data_raw.columns = ["tag",'reviews']
+
 
 X_train_raw,X_test_raw,y_train,y_test=train_test_split(data_raw["reviews"],
                                                data_raw["tag"],
@@ -96,7 +88,6 @@ def review_to_words(raw_review,mode):
 
     
 
-""""""
 
 
 
@@ -130,33 +121,23 @@ class KerasEmbeddingVectorizer(object):
 
 '''MeanWord2Vec'''
 
-vector_size = 1000
+
 
 
 # could use the mode "words" if use review_to_words, here we just modifed a little from previous train_data 
 train_reviews_w2v = train_data.apply(lambda r: r.split())
-
-
 test_reviews_w2v = test_data.apply(lambda r: r.split())
-
-
-model = Word2Vec(train_reviews_w2v, size=vector_size)
-w2v = dict(zip(model.wv.index2word, model.wv.vectors))
-
-
 
 
 
 class MeanEmbeddingVectorizer(object):
-    def __init__(self, word2vec,X_dim):
-        self.word2vec = word2vec
-        if len(word2vec)>0:
-            self.dim=len(next(iter(word2vec.values())))
-        else:
-            self.dim=0
+    def __init__(self,vector_size,X_dim):
+        self.dim = vector_size
         self.X_dim = X_dim
             
     def fit(self, X, y):
+        model = Word2Vec(X, size=self.dim)
+        self.word2vec = dict(zip(model.wv.index2word,model.wv.vectors))
         return self 
 
     def transform(self, X):
@@ -172,22 +153,17 @@ class MeanEmbeddingVectorizer(object):
             
 
 
-
-
 '''TF.IDF Weighted Word2Vec'''
 
 
 class TfidfEmbeddingVectorizer(object):
-    def __init__(self, word2vec,X_dim):
-        self.word2vec = word2vec
-        self.word2weight = None
-        if len(word2vec)>0:
-            self.dim=len(next(iter(word2vec.values())))
-        else:
-            self.dim=0
+    def __init__(self, vector_size,X_dim):
+        self.dim = vector_size
         self.X_dim = X_dim
         
-    def fit(self, X, y):
+    def fit(self, X, y):        
+        model = Word2Vec(X, size=self.dim)
+        self.word2vec = dict(zip(model.wv.index2word,model.wv.vectors))        
         tfidf = TfidfVectorizer(analyzer=lambda x: x)
         tfidf.fit(X)
         # if a word was never seen - it must be at least as infrequent
@@ -201,9 +177,6 @@ class TfidfEmbeddingVectorizer(object):
         return self
     
     def transform(self, X):
-        
-       
-        
         X = np.array([
                 np.mean([self.word2vec[w] * self.word2weight[w]
                          for w in words if w in self.word2vec] or
@@ -228,48 +201,34 @@ dm = 0
 train_raw = pd.DataFrame({"reviews":X_train_raw,"tag":y_train})
 test_raw = pd.DataFrame({"reviews":X_test_raw,"tag":y_test})
 
-train_tagged = train_raw.apply(
-    lambda r: TaggedDocument(words=review_to_words(r['reviews'],mode = "words"), tags=[r.tag]), axis=1)
-
-test_tagged = test_raw.apply(
-    lambda r: TaggedDocument(words=review_to_words(r['reviews'],mode = "words"), tags=[r.tag]), axis=1)
 
 
-#training Doc2Vec vector using all cpu
-
-cores = multiprocessing.cpu_count()
-
-from gensim.models import Doc2Vec
-
-model_dbow = Doc2Vec(dm=dm, vector_size=vector_size, negative=negative, hs=0, min_count=min_count, sample = 0, workers=cores)
-
-
-model_dbow.build_vocab([x for x in tqdm(train_tagged.values)])
-
-
-for epoch in range(10):
-    model_dbow.train(utils.shuffle([x for x in tqdm(train_tagged.values)]), total_examples=len(train_tagged.values), epochs=1)
-    model_dbow.alpha -= 0.002
-    model_dbow.min_alpha = model_dbow.alpha
-
-
-
-
-
-
-
-
-class Doc2Vec(object):
-    def __init__(self,Doc2Vec,dimension):
+class D2V(object):
+    def __init__(self,vector_size,min_count,negative,dm,cores,dimension):
         
-        self.model = Doc2Vec
         self.dimension =dimension  
+        self.min_count = min_count
+        self.negative = negative
+        self.dm = dm
+        self.vector_size = vector_size
+        self.cores= cores
         
-    def fit(self, X, y):
+    def fit(self, X, y):        
+        X_tagged = X.apply(
+                lambda r: TaggedDocument(words=review_to_words(r['reviews'],mode = "words"), tags=[r.tag]), axis=1)
+        self.model = Doc2Vec(dm=self.dm, vector_size=self.vector_size, 
+                             negative=self.negative, min_count=self.min_count,workers=self.cores,hs=0,
+                             sample = 0)        
+        self.model.build_vocab([x for x in tqdm(X_tagged.values)])
+        for epoch in range(10):
+            self.model.train(utils.shuffle([x for x in tqdm(X_tagged.values)]), total_examples=len(X_tagged.values), epochs=1)
+            self.model.alpha -= 0.002
+            self.model.min_alpha = self.model.alpha
         return self 
 
     def transform(self, X):
-        sents = X
+        sents = X.apply(
+                lambda r: TaggedDocument(words=review_to_words(r['reviews'],mode = "words"), tags=[r.tag]), axis=1)
         regressors = [self.model.infer_vector(doc.words, steps=20) for doc in sents]    
         if self.dimension == 3:
            regressors = np.expand_dims(regressors, axis=2)
@@ -308,9 +267,8 @@ def CNN_model(vector_size):
     def model():
         model= Sequential([
                 Conv1D(128, 5, activation='relu',input_shape=(vector_size,1)),
-                MaxPooling1D(5),
                 Conv1D(64, 5, activation='relu'),
-                MaxPooling1D(35),
+                MaxPooling1D(10),
                 
                 Flatten(),
                 Dense(64, activation='relu'),        
@@ -333,7 +291,7 @@ def CNN_model(vector_size):
 #baseline model 
 
 
-Model_baseline = Pipeline([("Keras", KerasEmbeddingVectorizer(vector_size=vector_size,mode='binary')), 
+Model_baseline = Pipeline([("Keras", KerasEmbeddingVectorizer(vector_size=100,mode='binary')), 
                    ("MultiNB",MultinomialNB())])
 
 
@@ -346,7 +304,7 @@ Multi_NB = GridSearchCV(Model_baseline, parameters,
                    verbose=0, refit=True,cv=5)
 
 Multi_NB.fit(train_reviews_w2v,y_train)
-means = Multi_NB.cv_results_['mean_test_score']
+means = Multi_NB.cv_results_['mean_test_score'].mean()
 
 
 score_baseline= [("baseline",means)]
@@ -356,46 +314,39 @@ score_baseline= [("baseline",means)]
 
 batch_size =300
 
+vector_size = 1000
+cores = multiprocessing.cpu_count()
 
-
-NN_meanW2V = Pipeline([("meanw2v",MeanEmbeddingVectorizer(w2v,X_dim=2)), 
+NN_meanW2V = Pipeline([("meanw2v",MeanEmbeddingVectorizer(vector_size=vector_size,X_dim=2)), 
                    ("NN",KerasClassifier(build_fn = NN_model(vector_size = vector_size),epochs=10, batch_size=batch_size,verbose=0
                            ))])
     
 
 
-NN_TfidfWeightedW2V = Pipeline([("tfidf", TfidfEmbeddingVectorizer(w2v,X_dim=2)), 
+NN_TfidfWeightedW2V = Pipeline([("tfidf", TfidfEmbeddingVectorizer(vector_size=vector_size,X_dim=2)), 
                    ("NN",KerasClassifier(build_fn = NN_model(vector_size = vector_size),epochs=10, batch_size=batch_size,
                            verbose = 0))])
 
 
 
-NN_Doc2Vec = Pipeline([("Doc2Vec", Doc2Vec(model_dbow,dimension = 2)), 
+NN_Doc2Vec = Pipeline([("Doc2Vec", D2V(vector_size=vector_size,min_count=min_count,negative=negative,dm=1,cores=cores,dimension = 2)), 
                    ("NN",KerasClassifier(build_fn = NN_model(vector_size=vector_size),epochs=10, batch_size=batch_size,verbose=0))])
 
 
 
-CNN_meanW2V = Pipeline([("meanw2v",MeanEmbeddingVectorizer(w2v,X_dim= 3)), 
+CNN_meanW2V = Pipeline([("meanw2v",MeanEmbeddingVectorizer(vector_size=vector_size,X_dim= 3)), 
                    ("CNN",KerasClassifier(build_fn = CNN_model(vector_size=vector_size),epochs=10, batch_size=batch_size,verbose=0
                           ))])
 
 
-
-
-CNN_Doc2Vec = Pipeline([("Doc2Vec", Doc2Vec(model_dbow,dimension = 3)), 
+CNN_Doc2Vec = Pipeline([("Doc2Vec", D2V(vector_size=vector_size,min_count=min_count,negative=negative,dm=1,cores=cores,dimension = 3)), 
                    ("CNN",KerasClassifier(build_fn = CNN_model(vector_size=vector_size),epochs=10, batch_size=batch_size,verbose=0
                            ))])
 
 
-CNN_TfidfWeightedW2V = Pipeline([("tfidf", TfidfEmbeddingVectorizer(w2v,X_dim=3)), 
+CNN_TfidfWeightedW2V = Pipeline([("tfidf", TfidfEmbeddingVectorizer(vector_size=vector_size,X_dim=3)), 
                    ("CNN",KerasClassifier(build_fn = CNN_model(vector_size=vector_size),epochs=10, batch_size=batch_size,verbose=0
                          ))])
-
-
-
-
-
-
 
 
 W2V_models = [
@@ -419,27 +370,21 @@ from tabulate import tabulate
 unsorted_scores_W2V = [(name, cross_val_score(model, train_reviews_w2v , y_train_cat, cv=5).mean()) for name, model in W2V_models]
 
 
-unsorted_scores_D2V = [(name, cross_val_score(model, train_tagged , y_train_cat, cv=5).mean()) for name, model in D2V_models]
+unsorted_scores_D2V = [(name, cross_val_score(model, train_raw , y_train_cat, cv=5).mean()) for name, model in D2V_models]
 
 
 
 
 
 
-scores = sorted(unsorted_scores_W2V + unsorted_scores_D2V, key=lambda x: -x[1])
+scores = sorted(unsorted_scores_W2V + unsorted_scores_D2V+score_baseline, key=lambda x: -x[1])
 
 print (tabulate(scores, floatfmt=".4f", headers=("model", 'score')))
 
 
 
 
-CNN_Doc2Vec.fit(train_tagged , y_train_cat)
+NN_Doc2Vec.fit(train_raw , y_train_cat)
 
-text_prediction=CNN_Doc2Vec.predict(test_tagged)
-sum(text_prediction+1==y_test)/len(y_test)
-
-
-
-
-    
+text_accuracy=NN_Doc2Vec.score(test_raw,y_test_cat)
 
